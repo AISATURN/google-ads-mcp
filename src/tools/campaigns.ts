@@ -463,7 +463,13 @@ Returns (json):
           ? (args.campaign_resource_name as string)
           : campaignResourceName(customerId, cleanCampaignId);
 
-        await customer.campaigns.update([{ resource_name: resourceName, status: args.status }]);
+        // REMOVED must be issued as a delete operation; the API rejects an update that sets
+        // status = REMOVED (request_error 18). ENABLED / PAUSED are normal field updates.
+        if (args.status === "REMOVED") {
+          await customer.campaigns.remove([resourceName]);
+        } else {
+          await customer.campaigns.update([{ resource_name: resourceName, status: args.status }]);
+        }
         const output = {
           resource_name: resourceName,
           campaign_id: idFromResourceName(resourceName),
