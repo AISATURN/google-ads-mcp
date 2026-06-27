@@ -31,6 +31,7 @@ import { registerExclusionTools } from "./tools/exclusions.js";
 import { registerRecommendationTools } from "./tools/recommendations.js";
 import { registerPmaxTools } from "./tools/pmax.js";
 import { registerDsaTools } from "./tools/dsa.js";
+import { registerBrandTools } from "./tools/brand.js";
 
 const TOOL_NAMES = [
   "google_ads_list_accessible_customers",
@@ -142,6 +143,7 @@ async function main(): Promise<void> {
   registerRecommendationTools(server);
   registerPmaxTools(server);
   registerDsaTools(server);
+  registerBrandTools(server);
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
