@@ -769,4 +769,197 @@ Returns (json):
       }
     },
   );
+
+  // ---- update_campaign_network_settings --------------------------------------
+  const updateNetworkInput = z.object({
+    campaign_id: z
+      .string()
+      .optional()
+      .describe("Numeric campaign ID. Provide this OR campaign_resource_name."),
+    campaign_resource_name: z
+      .string()
+      .optional()
+      .describe("Full campaign resource name. Provide this OR campaign_id."),
+    target_google_search: z
+      .boolean()
+      .optional()
+      .describe("Serve on Google search results. Omit to leave unchanged."),
+    target_search_network: z
+      .boolean()
+      .optional()
+      .describe("Serve on Google Search Partner sites. Omit to leave unchanged."),
+    target_content_network: z
+      .boolean()
+      .optional()
+      .describe("Serve on the Display Network. Omit to leave unchanged."),
+    target_partner_search_network: z
+      .boolean()
+      .optional()
+      .describe("Serve on the Google Partner search network. Omit to leave unchanged."),
+    customer_id: z
+      .string()
+      .optional()
+      .describe("10-digit account ID (dashes optional). Defaults to GOOGLE_ADS_CUSTOMER_ID."),
+    response_format: z.nativeEnum(ResponseFormat).default(ResponseFormat.MARKDOWN),
+  });
+
+  const updateNetworkOutput = z.object({
+    resource_name: z.string(),
+    campaign_id: z.string(),
+    previous: z.object({
+      target_google_search: z.boolean(),
+      target_search_network: z.boolean(),
+      target_content_network: z.boolean(),
+      target_partner_search_network: z.boolean(),
+    }),
+    updated: z.object({
+      target_google_search: z.boolean(),
+      target_search_network: z.boolean(),
+      target_content_network: z.boolean(),
+      target_partner_search_network: z.boolean(),
+    }),
+    changed_fields: z.array(z.string()),
+    customer_id: z.string(),
+  });
+
+  server.registerTool(
+    "google_ads_update_campaign_network_settings",
+    {
+      title: "Update Campaign Network Settings",
+      description: `Toggle which networks an existing campaign serves on: Google Search, Search Partners, the Display Network, and the Google Partner search network.
+
+Only the fields you pass are changed; omitted fields keep their current values. Common use: turn OFF Search Partners (target_search_network=false) on a Search/DSA campaign to cut low-quality partner-site traffic.
+
+Args:
+  - campaign_id (string, optional) | campaign_resource_name (string, optional): exactly one required
+  - target_google_search (boolean, optional)
+  - target_search_network (boolean, optional): Search Partners
+  - target_content_network (boolean, optional): Display Network
+  - target_partner_search_network (boolean, optional)
+  - at least one of the four network flags is required
+  - customer_id (string, optional): defaults to GOOGLE_ADS_CUSTOMER_ID
+  - response_format ('markdown' | 'json'): default 'markdown'
+
+Returns (json):
+  { "resource_name": string, "campaign_id": string, "previous": {...}, "updated": {...}, "changed_fields": string[], "customer_id": string }`,
+      inputSchema: updateNetworkInput.shape,
+      outputSchema: updateNetworkOutput.shape,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async (args) => {
+      try {
+        const hasId = typeof args.campaign_id === "string" && args.campaign_id.length > 0;
+        const hasRn =
+          typeof args.campaign_resource_name === "string" && args.campaign_resource_name.length > 0;
+        if (hasId === hasRn) {
+          return fail("Provide exactly one of 'campaign_id' or 'campaign_resource_name'.");
+        }
+
+        const flagKeys = [
+          "target_google_search",
+          "target_search_network",
+          "target_content_network",
+          "target_partner_search_network",
+        ] as const;
+        const providedFlags = flagKeys.filter((k) => typeof args[k] === "boolean");
+        if (providedFlags.length === 0) {
+          return fail(
+            "Provide at least one network flag to change (target_google_search, target_search_network, target_content_network, or target_partner_search_network).",
+          );
+        }
+
+        let cleanCampaignId = "";
+        if (hasId) {
+          cleanCampaignId = (args.campaign_id as string).replace(/\D/g, "");
+          if (!cleanCampaignId) {
+            return fail(`Invalid campaign_id "${args.campaign_id}". Expected a numeric campaign ID.`);
+          }
+        }
+        const customer = getCustomer(args.customer_id);
+        const customerId = customer.credentials.customer_id;
+        const resourceName = hasRn
+          ? (args.campaign_resource_name as string)
+          : campaignResourceName(customerId, cleanCampaignId);
+
+        // Read the current network settings so we can report and preserve unchanged flags.
+        const rows = await customer.query(
+          `SELECT campaign.network_settings.target_google_search, ` +
+            `campaign.network_settings.target_search_network, ` +
+            `campaign.network_settings.target_content_network, ` +
+            `campaign.network_settings.target_partner_search_network ` +
+            `FROM campaign WHERE campaign.resource_name = '${gaqlString(resourceName)}' LIMIT 1`,
+        );
+        const current = rows[0]?.campaign?.network_settings;
+        if (!current) {
+          return fail(`Campaign ${idFromResourceName(resourceName)} not found, or it has no network settings.`);
+        }
+
+        const previous = {
+          target_google_search: Boolean(current.target_google_search),
+          target_search_network: Boolean(current.target_search_network),
+          target_content_network: Boolean(current.target_content_network),
+          target_partner_search_network: Boolean(current.target_partner_search_network),
+        };
+
+        // Apply requested flags over the current values; send the full object so the
+        // generated field mask covers every network flag.
+        const updated = { ...previous };
+        const changedFields: string[] = [];
+        for (const k of providedFlags) {
+          const next = args[k] as boolean;
+          if (updated[k] !== next) changedFields.push(k);
+          updated[k] = next;
+        }
+
+        if (changedFields.length === 0) {
+          const noop = {
+            resource_name: resourceName,
+            campaign_id: idFromResourceName(resourceName),
+            previous,
+            updated,
+            changed_fields: changedFields,
+            customer_id: customerId,
+          };
+          if (args.response_format === ResponseFormat.JSON) {
+            return ok(toJson(noop), noop);
+          }
+          return ok(
+            `ℹ️ Campaign ${noop.campaign_id} network settings already match the requested values — no change made.`,
+            noop,
+          );
+        }
+
+        const update: resources.ICampaign = {
+          resource_name: resourceName,
+          network_settings: updated as resources.Campaign.INetworkSettings,
+        };
+        await customer.campaigns.update([update]);
+
+        const output = {
+          resource_name: resourceName,
+          campaign_id: idFromResourceName(resourceName),
+          previous,
+          updated,
+          changed_fields: changedFields,
+          customer_id: customerId,
+        };
+        if (args.response_format === ResponseFormat.JSON) {
+          return ok(toJson(output), output);
+        }
+        const lines = changedFields.map(
+          (k) => `- ${k}: ${previous[k as keyof typeof previous]} → **${updated[k as keyof typeof updated]}**`,
+        );
+        const text =
+          `✅ Campaign ${output.campaign_id} network settings updated:\n${lines.join("\n")}\n- Resource: \`${resourceName}\``;
+        return ok(text, output);
+      } catch (error) {
+        return fail(formatGoogleAdsError(error));
+      }
+    },
+  );
 }
