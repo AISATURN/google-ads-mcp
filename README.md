@@ -113,6 +113,45 @@ Add to your client's MCP server config (e.g. `claude_desktop_config.json`):
 
 ---
 
+## Remote deployment (Vercel + claude.ai Custom Connector)
+
+The steps above run this server **locally over stdio** (Claude Code, Claude Desktop). To add it as a **Custom Connector** in claude.ai (Settings → Connectors), it needs to be reachable over HTTPS — claude.ai's servers make outbound requests to it, so a purely local process can't be added there directly.
+
+This repo also ships an HTTP entrypoint (`api/*.ts`) that deploys to **Vercel** (Node.js runtime — required because `google-ads-api` uses gRPC under the hood, which doesn't run on edge/Workers runtimes). It's gated by a minimal, self-issued OAuth 2.1 (authorization code + PKCE) flow with a single password, since claude.ai's connector UI only supports no-auth or OAuth — there's no field for a static bearer token, and this connector can spend real money on your ad account.
+
+### 1. Set environment variables on Vercel
+
+In addition to the five `GOOGLE_ADS_*` variables above, set:
+
+| Variable | Required | Notes |
+| --- | --- | --- |
+| `MCP_OWNER_PASSWORD` | ✅ | Long random string (not a memorized phrase) — e.g. `openssl rand -base64 24`. Gates the `/api/authorize` login page. |
+| `MCP_JWT_SECRET` | ✅ | Signs/verifies all OAuth tokens — e.g. `openssl rand -base64 32`. **Rotating this instantly revokes every outstanding token** (the incident-response path — there's no database to revoke individual tokens). |
+| `MCP_PUBLIC_URL` | ✅ | The deployment's base URL, no trailing slash (e.g. `https://your-project.vercel.app`). Used as the OAuth issuer/audience — must exactly match the real deployed domain. |
+
+```bash
+vercel env add MCP_OWNER_PASSWORD
+vercel env add MCP_JWT_SECRET
+vercel env add MCP_PUBLIC_URL
+# ...plus the six GOOGLE_ADS_* / login/customer vars from the table above
+```
+
+### 2. Deploy
+
+```bash
+vercel --prod
+```
+
+### 3. Add it in claude.ai
+
+Settings → Connectors → **Add custom connector** → enter your deployment's base URL. claude.ai will discover `/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server`, register itself via `/api/register`, and redirect your browser to `/api/authorize` — enter `MCP_OWNER_PASSWORD` there to complete the connection. Once connected, all 42 `google_ads_*` tools are available in chats with the connector enabled.
+
+### Revoking access
+
+Rotate `MCP_JWT_SECRET` in the Vercel project's env vars and redeploy. This immediately invalidates every issued access/refresh token and authorization code; you'll need to re-authorize the connector in claude.ai afterward.
+
+---
+
 ## Typical workflow (launch a Search campaign)
 
 A natural-language request like *"Create a paused search campaign 'Summer Sale' with a 50/day budget, an ad group for running shoes, a few keywords, and an ad"* maps to:
@@ -159,14 +198,23 @@ Then call `google_ads_list_accessible_customers` first to confirm authentication
 
 ```
 src/
-├── index.ts            # entry point: env validation, tool registration, stdio transport
+├── index.ts            # stdio entry point: env validation, argv handling, stdio transport
+├── server.ts           # buildMcpServer(): shared tool registration (used by stdio + HTTP entrypoints)
 ├── client.ts           # auth, client/Customer factories, micros + error formatting
 ├── constants.ts        # server metadata and string-enum option lists
 ├── format.ts           # response-format enum, result builders, char-limit guard
-└── tools/
-    ├── queries.ts      # list_accessible_customers, list_campaigns, run_gaql, get_campaign_performance
-    ├── campaigns.ts    # create_campaign_budget, create_campaign, update_campaign_status
-    └── adGroups.ts     # create_ad_group, add_keywords, create_responsive_search_ad
+├── http/                # remote-deployment support (OAuth + metadata), unused by the stdio path
+│   ├── auth.ts          # stateless JWT sign/verify for auth codes, access + refresh tokens
+│   ├── env.ts            # env var helpers (MCP_PUBLIC_URL, MCP_JWT_SECRET, ...)
+│   └── metadata.ts       # .well-known OAuth/MCP discovery document builders
+└── tools/               # one file per tool group, each exporting registerXTools(server)
+
+api/                    # Vercel serverless functions (Node runtime) — the HTTP entrypoint
+├── mcp.ts               # MCP Streamable HTTP endpoint, bearer-token gated
+├── authorize.ts          # OAuth authorization endpoint (password form)
+├── token.ts              # OAuth token endpoint (code/refresh exchange)
+├── register.ts            # minimal Dynamic Client Registration endpoint
+└── well-known/            # served at /.well-known/... via vercel.json rewrites
 ```
 
 ## License

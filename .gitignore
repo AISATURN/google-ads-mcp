@@ -8,3 +8,11 @@ dist/
 # Backup/secret files
 .env.bak
 *.bak
+
+# Vercel CLI local project-link metadata
+.vercel
+
+# One-off client campaign data/scripts (not part of the MCP server itself)
+gooplast-assets.txt
+gooplast-negative-keywords.txt
+scripts/setup-deercase-aksesuar.mjs
