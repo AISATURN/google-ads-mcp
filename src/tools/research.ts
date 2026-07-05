@@ -11,6 +11,35 @@ import { z } from "zod";
 import { getCustomer, fromMicros, formatGoogleAdsError } from "../client.js";
 import { ResponseFormat, ok, fail, toJson } from "../format.js";
 
+const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
+// MonthOfYear enum codes (0=UNSPECIFIED, 1=UNKNOWN, 2=JANUARY..13=DECEMBER).
+const MONTH_NAMES_BY_CODE = [
+  "", "", "JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE",
+  "JULY", "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER",
+];
+const MONTH_DISPLAY_NAMES: Record<string, string> = {
+  "2": "Jan", "3": "Feb", "4": "Mar", "5": "Apr", "6": "May", "7": "Jun",
+  "8": "Jul", "9": "Aug", "10": "Sep", "11": "Oct", "12": "Nov", "13": "Dec",
+};
+
+/**
+ * MonthOfYear comes back either as its numeric enum code or as the string enum
+ * name (e.g. "JANUARY") depending on nesting depth in the API client's response
+ * serialization — normalize both to the numeric code for sorting/display.
+ */
+function monthEnumToNumber(month: unknown): number {
+  if (typeof month === "string" && !/^\d+$/.test(month)) {
+    return MONTH_NAMES_BY_CODE.indexOf(month.toUpperCase());
+  }
+  return Number(month ?? 0);
+}
+
+/** Parses a 'YYYY-MM' string into the {year, month} shape the API expects (month as an enum name). */
+function toYearMonth(yearMonth: string): { year: number; month: string } {
+  const [year, month] = yearMonth.split("-").map(Number);
+  return { year, month: MONTH_NAMES_BY_CODE[month + 1] };
+}
+
 export function registerResearchTools(server: McpServer): void {
   // ---- generate_keyword_ideas ------------------------------------------------
   const ideasInput = z.object({
@@ -19,6 +48,16 @@ export function registerResearchTools(server: McpServer): void {
     language_id: z.string().default("1000").describe("Language constant ID (default 1000 = English; Turkish = 1037)."),
     location_ids: z.array(z.string()).optional().describe("Geo target constant IDs to scope volume (e.g. US=2840, Turkey=2792)."),
     limit: z.number().int().min(1).max(200).default(50).describe("Max ideas to return (default 50)."),
+    start_month: z
+      .string()
+      .regex(MONTH_RE, "Use YYYY-MM format")
+      .optional()
+      .describe("Historical range start, e.g. '2024-06'. Requires end_month. Defaults to the trailing 12 months if omitted."),
+    end_month: z
+      .string()
+      .regex(MONTH_RE, "Use YYYY-MM format")
+      .optional()
+      .describe("Historical range end, e.g. '2025-05'. Requires start_month. Google Ads allows up to ~4 years back."),
     customer_id: z.string().optional(),
     response_format: z.nativeEnum(ResponseFormat).default(ResponseFormat.MARKDOWN),
   });
@@ -27,19 +66,20 @@ export function registerResearchTools(server: McpServer): void {
     "google_ads_generate_keyword_ideas",
     {
       title: "Generate Keyword Ideas (Volume & Competition)",
-      description: `Get keyword ideas with real average monthly search volume and competition from the Keyword Planner (KeywordPlanIdeaService).
+      description: `Get keyword ideas with real average monthly search volume, a month-by-month volume breakdown, and competition from the Keyword Planner (KeywordPlanIdeaService).
 
-Provide seed 'keywords' and/or a 'page_url'. Scope volume by language (default English=1000) and optional locations.
+Provide seed 'keywords' and/or a 'page_url'. Scope volume by language (default English=1000) and optional locations. By default Google returns the trailing 12 months of history; pass 'start_month'/'end_month' to scope the average and the monthly breakdown to a specific historical window instead (e.g. to compare last year's season vs. this year's).
 
 Args:
   - keywords (string[], optional) and/or page_url (string, optional): at least one required
   - language_id (string, default '1000')
   - location_ids (string[], optional): geo target constant IDs
   - limit (number, default 50)
+  - start_month / end_month (string, optional, 'YYYY-MM'): custom historical range; provide both or neither
   - customer_id (string, optional)
   - response_format ('markdown' | 'json')
 
-Returns (json): { "count": number, "ideas": [{ "text": string, "avg_monthly_searches": number, "competition": string, "low_top_of_page_bid": number, "high_top_of_page_bid": number }], "customer_id": string }`,
+Returns (json): { "count": number, "date_range": string, "ideas": [{ "text": string, "avg_monthly_searches": number, "competition": string, "low_top_of_page_bid": number, "high_top_of_page_bid": number, "monthly_search_volumes": [{ "year": number, "month": string, "monthly_searches": number }] }], "customer_id": string }`,
       inputSchema: ideasInput.shape,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
@@ -47,6 +87,9 @@ Returns (json): { "count": number, "ideas": [{ "text": string, "avg_monthly_sear
       try {
         if (!args.keywords?.length && !args.page_url) {
           return fail("Provide at least one of 'keywords' or 'page_url'.");
+        }
+        if ((args.start_month && !args.end_month) || (!args.start_month && args.end_month)) {
+          return fail("Provide both start_month and end_month for a custom historical range, or neither.");
         }
         const customer = getCustomer(args.customer_id);
         const customerId = customer.credentials.customer_id;
@@ -58,6 +101,11 @@ Returns (json): { "count": number, "ideas": [{ "text": string, "avg_monthly_sear
           keyword_plan_network: "GOOGLE_SEARCH",
           page_size: args.limit,
         };
+        if (args.start_month && args.end_month) {
+          request.historical_metrics_options = {
+            year_month_range: { start: toYearMonth(args.start_month), end: toYearMonth(args.end_month) },
+          };
+        }
         const hasKw = !!args.keywords?.length;
         const hasUrl = !!args.page_url;
         if (hasKw && hasUrl) request.keyword_and_url_seed = { url: args.page_url, keywords: args.keywords };
@@ -76,6 +124,7 @@ Returns (json): { "count": number, "ideas": [{ "text": string, "avg_monthly_sear
             competition?: number | string;
             low_top_of_page_bid_micros?: number | string;
             high_top_of_page_bid_micros?: number | string;
+            monthly_search_volumes?: Array<{ year?: number | string; month?: number | string; monthly_searches?: number | string }>;
           };
         }>;
 
@@ -83,24 +132,41 @@ Returns (json): { "count": number, "ideas": [{ "text": string, "avg_monthly_sear
         const ideas = results.slice(0, args.limit).map((r) => {
           const m = r.keyword_idea_metrics ?? {};
           const comp = String(m.competition ?? "");
+          const monthly_search_volumes = (m.monthly_search_volumes ?? [])
+            .map((v) => ({
+              year: Number(v.year ?? 0),
+              month_num: monthEnumToNumber(v.month),
+              monthly_searches: Number(v.monthly_searches ?? 0),
+            }))
+            .sort((a, b) => a.year - b.year || a.month_num - b.month_num)
+            .map(({ year, month_num, monthly_searches }) => ({
+              year,
+              month: MONTH_DISPLAY_NAMES[String(month_num)] ?? String(month_num),
+              monthly_searches,
+            }));
           return {
             text: r.text ?? "",
             avg_monthly_searches: Number(m.avg_monthly_searches ?? 0),
             competition: COMPETITION[comp] ?? comp,
             low_top_of_page_bid: fromMicros(m.low_top_of_page_bid_micros),
             high_top_of_page_bid: fromMicros(m.high_top_of_page_bid_micros),
+            monthly_search_volumes,
           };
         });
         ideas.sort((a, b) => b.avg_monthly_searches - a.avg_monthly_searches);
 
-        const output = { count: ideas.length, ideas, customer_id: customerId };
+        const dateRange = args.start_month && args.end_month ? `${args.start_month} to ${args.end_month}` : "trailing 12 months (default)";
+        const output = { count: ideas.length, date_range: dateRange, ideas, customer_id: customerId };
         if (args.response_format === ResponseFormat.JSON) return ok(toJson(output), output);
         const lines = [
-          `# Keyword ideas (${ideas.length})`,
+          `# Keyword ideas (${ideas.length}) — ${dateRange}`,
           ``,
-          `| Keyword | Avg monthly searches | Competition | Top-of-page bid (low–high) |`,
-          `| --- | ---: | --- | --- |`,
-          ...ideas.map((i) => `| ${i.text} | ${i.avg_monthly_searches} | ${i.competition} | ${i.low_top_of_page_bid.toFixed(2)}–${i.high_top_of_page_bid.toFixed(2)} |`),
+          `| Keyword | Avg monthly searches | Competition | Top-of-page bid (low–high) | Monthly (oldest→newest) |`,
+          `| --- | ---: | --- | --- | --- |`,
+          ...ideas.map((i) => {
+            const monthly = i.monthly_search_volumes.map((v) => `${v.month} '${String(v.year).slice(2)}: ${v.monthly_searches}`).join(", ");
+            return `| ${i.text} | ${i.avg_monthly_searches} | ${i.competition} | ${i.low_top_of_page_bid.toFixed(2)}–${i.high_top_of_page_bid.toFixed(2)} | ${monthly} |`;
+          }),
         ];
         return ok(lines.join("\n"), output);
       } catch (error) {
