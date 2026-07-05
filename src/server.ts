@@ -23,6 +23,7 @@ import { registerRecommendationTools } from "./tools/recommendations.js";
 import { registerPmaxTools } from "./tools/pmax.js";
 import { registerDsaTools } from "./tools/dsa.js";
 import { registerBrandTools } from "./tools/brand.js";
+import { registerAccountTools } from "./tools/account.js";
 
 export const TOOL_NAMES = [
   "google_ads_add_asset_group_assets",
@@ -39,6 +40,7 @@ export const TOOL_NAMES = [
   "google_ads_create_campaign",
   "google_ads_create_campaign_budget",
   "google_ads_create_conversion_action",
+  "google_ads_create_customer_client",
   "google_ads_create_dsa_ad_group",
   "google_ads_create_dynamic_search_ad",
   "google_ads_create_responsive_search_ad",
@@ -96,6 +98,7 @@ export function buildMcpServer(): McpServer {
   registerPmaxTools(server);
   registerDsaTools(server);
   registerBrandTools(server);
+  registerAccountTools(server);
 
   return server;
 }
