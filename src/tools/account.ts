@@ -8,6 +8,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { services } from "google-ads-api";
 import { z } from "zod";
 import { getClient, getCredentials, normalizeCustomerId, formatGoogleAdsError } from "../client.js";
+import { assertUnrestricted } from "../scope.js";
 import { ResponseFormat, ok, fail, toJson } from "../format.js";
 
 function idFromResourceName(rn: string | null | undefined): string {
@@ -56,6 +57,9 @@ Returns (json): { "resource_name": string, "customer_id": string, "descriptive_n
     },
     async (args) => {
       try {
+        // Creating an account under the manager isn't scoped to one advertising
+        // account, so there is no allowlist to check it against — owner only.
+        assertUnrestricted("creating a Google Ads sub-account");
         const creds = getCredentials();
         const managerId = args.manager_customer_id
           ? normalizeCustomerId(args.manager_customer_id)

@@ -125,7 +125,8 @@ In addition to the five `GOOGLE_ADS_*` variables above, set:
 
 | Variable | Required | Notes |
 | --- | --- | --- |
-| `MCP_OWNER_PASSWORD` | ✅ | Long random string (not a memorized phrase) — e.g. `openssl rand -base64 24`. Gates the `/api/authorize` login page. |
+| `MCP_OWNER_PASSWORD` | ✅ | **Your** password — unrestricted access to every account the credentials can reach. Long random string (not a memorized phrase) — e.g. `openssl rand -base64 24`. Gates the `/api/authorize` login page. |
+| `MCP_USERS` | — | Optional JSON array of extra users, each locked to specific ad accounts. See [Sharing access](#sharing-access-with-someone-else) below. |
 | `MCP_JWT_SECRET` | ✅ | Signs/verifies all OAuth tokens — e.g. `openssl rand -base64 32`. **Rotating this instantly revokes every outstanding token** (the incident-response path — there's no database to revoke individual tokens). |
 | `MCP_PUBLIC_URL` | ✅ | The deployment's base URL, no trailing slash (e.g. `https://your-project.vercel.app`). Used as the OAuth issuer/audience — must exactly match the real deployed domain. |
 
@@ -135,6 +136,42 @@ vercel env add MCP_JWT_SECRET
 vercel env add MCP_PUBLIC_URL
 # ...plus the six GOOGLE_ADS_* / login/customer vars from the table above
 ```
+
+### Sharing access with someone else
+
+The Google Ads credentials are always yours — there is one refresh token and it
+belongs to the account owner. What `MCP_USERS` adds is a way to let someone else
+drive that connection while confined to the ad accounts you name:
+
+```json
+[
+  { "id": "xenon", "password": "<openssl rand -base64 24>", "customer_ids": ["8392105733"] }
+]
+```
+
+Set it as one line (`vercel env add MCP_USERS`), redeploy, and hand that person
+the deployment URL plus *their* password — nothing else. They add it in claude.ai
+as a custom connector exactly like you do, and enter their password on the same
+`/api/authorize` page.
+
+What their access looks like:
+
+- Every tool resolves its account through one choke point ([`resolveCustomerId`](src/client.ts)),
+  which rejects any customer ID outside their `customer_ids`. Naming another
+  account explicitly fails; it is not a UI-level restriction.
+- Tool calls with no `customer_id` default to their **first allowed account**, not
+  your `GOOGLE_ADS_CUSTOMER_ID`.
+- `google_ads_list_accessible_customers` returns only their accounts — your
+  other accounts are never disclosed.
+- `google_ads_create_customer_client` (creating sub-accounts under your MCC) is
+  owner-only.
+- Within their own account they have the **full** tool surface, including spend:
+  budgets, bids, campaign status. The allowlist bounds *which* account, not what
+  they can do inside it.
+
+The allowlist is signed into their OAuth tokens, so refreshing a token can never
+widen it. To revoke one person, delete their entry from `MCP_USERS` and redeploy;
+to revoke everyone at once, rotate `MCP_JWT_SECRET`.
 
 ### 2. Deploy
 
@@ -148,7 +185,8 @@ Settings → Connectors → **Add custom connector** → enter your deployment's
 
 ### Revoking access
 
-Rotate `MCP_JWT_SECRET` in the Vercel project's env vars and redeploy. This immediately invalidates every issued access/refresh token and authorization code; you'll need to re-authorize the connector in claude.ai afterward.
+- **One user:** remove their object from `MCP_USERS` and redeploy. Their password stops working immediately; any access token they still hold expires within 10 days (refresh tokens keep working until then only if you *also* rotate the secret below — so rotate it if the revocation is urgent).
+- **Everyone:** rotate `MCP_JWT_SECRET` in the Vercel project's env vars and redeploy. This immediately invalidates every issued access/refresh token and authorization code; you'll need to re-authorize the connector in claude.ai afterward.
 
 ---
 
@@ -203,8 +241,10 @@ src/
 ├── client.ts           # auth, client/Customer factories, micros + error formatting
 ├── constants.ts        # server metadata and string-enum option lists
 ├── format.ts           # response-format enum, result builders, char-limit guard
+├── scope.ts            # per-request access scope (which accounts the caller may touch)
 ├── http/                # remote-deployment support (OAuth + metadata), unused by the stdio path
 │   ├── auth.ts          # stateless JWT sign/verify for auth codes, access + refresh tokens
+│   ├── users.ts          # env-declared user directory (MCP_OWNER_PASSWORD, MCP_USERS)
 │   ├── env.ts            # env var helpers (MCP_PUBLIC_URL, MCP_JWT_SECRET, ...)
 │   └── metadata.ts       # .well-known OAuth/MCP discovery document builders
 └── tools/               # one file per tool group, each exporting registerXTools(server)
