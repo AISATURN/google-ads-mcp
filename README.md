@@ -181,7 +181,17 @@ vercel --prod
 
 ### 3. Add it in claude.ai
 
-Settings → Connectors → **Add custom connector** → enter your deployment's base URL. claude.ai will discover `/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server`, register itself via `/api/register`, and redirect your browser to `/api/authorize` — enter `MCP_OWNER_PASSWORD` there to complete the connection. Once connected, all 42 `google_ads_*` tools are available in chats with the connector enabled.
+Settings → Connectors → **Add custom connector** → enter the **`/api/mcp`** URL, not the bare domain:
+
+```
+https://your-project.vercel.app/api/mcp
+```
+
+The MCP endpoint lives at `/api/mcp`; the site root serves no MCP server, so giving the bare domain fails *after* a successful login with "no MCP server was found at the provided URL". The path also has to match exactly, because access tokens are audience-bound to `MCP_PUBLIC_URL` + `/api/mcp` — an alias path would authorize and then 401 on every call.
+
+Under **OAuth client**, pick **"No client ID — register one automatically"** (Dynamic Client Registration). The server implements RFC 7591 at `/api/register` and advertises it in its metadata; it does not advertise support for Anthropic's hosted client metadata (CIMD).
+
+claude.ai then discovers `/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server`, registers itself, and redirects your browser to `/api/authorize` — enter your password there to complete the connection. Once connected, all 42 `google_ads_*` tools are available in chats with the connector enabled.
 
 ### Revoking access
 
