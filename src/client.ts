@@ -6,6 +6,7 @@
  */
 
 import { GoogleAdsApi, type Customer } from "google-ads-api";
+import { getAllowedCustomerIds } from "./scope.js";
 
 export interface GoogleAdsCredentials {
   developer_token: string;
@@ -80,12 +81,20 @@ export function normalizeCustomerId(id: string): string {
 }
 
 /**
- * Resolves a customer ID from an explicit argument or the GOOGLE_ADS_CUSTOMER_ID
- * default, validating that it is a 10-digit Google Ads account ID.
+ * Resolves a customer ID from an explicit argument or a default, validating
+ * that it is a 10-digit Google Ads account ID.
+ *
+ * This is the single choke point for account access: every tool reaches the
+ * API through getCustomer(), which resolves here first. When the caller is
+ * account-scoped (see src/scope.ts), their allowlist both supplies the default
+ * account and bounds which IDs they may name — so a scoped user cannot reach
+ * another account by passing its ID explicitly, and never inherits the owner's
+ * GOOGLE_ADS_CUSTOMER_ID default.
  */
 export function resolveCustomerId(provided?: string): string {
   const creds = getCredentials();
-  const raw = provided?.trim() || creds.default_customer_id;
+  const allowed = getAllowedCustomerIds();
+  const raw = provided?.trim() || (allowed ? allowed[0] : creds.default_customer_id);
   if (!raw) {
     throw new Error(
       "No customer_id provided and GOOGLE_ADS_CUSTOMER_ID is not set. " +
@@ -98,6 +107,12 @@ export function resolveCustomerId(provided?: string): string {
     throw new Error(
       `Invalid customer_id "${raw}". Expected a 10-digit Google Ads account ID ` +
         `(e.g. 1234567890 or 123-456-7890).`,
+    );
+  }
+  if (allowed && !allowed.includes(normalized)) {
+    throw new Error(
+      `Access denied for account ${normalized}. This connection is limited to ` +
+        `account(s): ${allowed.join(", ")}.`,
     );
   }
   return normalized;

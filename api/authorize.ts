@@ -1,11 +1,16 @@
 /**
  * OAuth 2.1 authorization endpoint: validates the incoming request, shows a
- * password gate (this is a single-user server — there's no real "account
- * picker"), and on success redirects back to the client with a signed
+ * password gate, and on success redirects back to the client with a signed
  * authorization code (see src/http/auth.ts).
+ *
+ * The password identifies *which* user is logging in (see src/http/users.ts):
+ * the owner, or one of the account-scoped users declared in MCP_USERS. The
+ * resulting account allowlist is signed into the authorization code, so it
+ * travels with every token minted from it.
  */
 
-import { signAuthCode, checkOwnerPassword } from "../src/http/auth.js";
+import { signAuthCode } from "../src/http/auth.js";
+import { authenticateUser } from "../src/http/users.js";
 
 export const config = { runtime: "nodejs" };
 
@@ -101,7 +106,8 @@ export async function POST(request: Request): Promise<Response> {
 
   const form = await request.formData();
   const password = String(form.get("password") ?? "");
-  if (!checkOwnerPassword(password)) {
+  const user = authenticateUser(password);
+  if (!user) {
     return renderForm(url, "Incorrect password. Try again.");
   }
 
@@ -109,6 +115,8 @@ export async function POST(request: Request): Promise<Response> {
     client_id: params.clientId,
     redirect_uri: params.redirectUri,
     code_challenge: params.codeChallenge,
+    sub: user.id,
+    customers: user.customerIds,
   });
 
   const redirectTarget = new URL(params.redirectUri);

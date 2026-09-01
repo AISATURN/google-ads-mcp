@@ -7,6 +7,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { getClient, getCredentials, getCustomer, fromMicros, formatGoogleAdsError } from "../client.js";
+import { getAllowedCustomerIds } from "../scope.js";
 import { ResponseFormat, ok, fail, toJson, clampRowsToLimit } from "../format.js";
 import { DATE_RANGES, CHARACTER_LIMIT } from "../constants.js";
 
@@ -98,11 +99,23 @@ Returns (json):
     },
     async (args) => {
       try {
-        const client = getClient();
-        const { refresh_token } = getCredentials();
-        const res = await client.listAccessibleCustomers(refresh_token);
-        const resourceNames = res.resource_names ?? [];
-        const customerIds = resourceNames.map((rn) => rn.split("/")[1] ?? rn);
+        // An account-scoped caller gets their allowlist verbatim: the underlying
+        // API call answers "what can the owner's token reach", which is both
+        // wider than their access and, for accounts reached through the manager,
+        // not even a superset of it.
+        const allowed = getAllowedCustomerIds();
+        let resourceNames: string[];
+        let customerIds: string[];
+        if (allowed) {
+          customerIds = allowed;
+          resourceNames = allowed.map((id) => `customers/${id}`);
+        } else {
+          const client = getClient();
+          const { refresh_token } = getCredentials();
+          const res = await client.listAccessibleCustomers(refresh_token);
+          resourceNames = res.resource_names ?? [];
+          customerIds = resourceNames.map((rn) => rn.split("/")[1] ?? rn);
+        }
         const output = {
           count: customerIds.length,
           customer_ids: customerIds,

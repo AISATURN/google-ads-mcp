@@ -2,6 +2,10 @@
  * OAuth 2.1 token endpoint: exchanges an authorization code (+ PKCE verifier)
  * or a refresh token for a fresh access token. See src/http/auth.ts for the
  * underlying stateless JWT sign/verify logic.
+ *
+ * The principal (user id + account allowlist) is carried over from the
+ * presented code/refresh token onto every token issued here — a caller can
+ * never refresh their way into wider access than they were granted.
  */
 
 import {
@@ -53,8 +57,9 @@ export async function POST(request: Request): Promise<Response> {
       return errorResponse("invalid_grant", "code_verifier does not match code_challenge");
     }
 
-    const { token, expiresIn } = await signAccessToken(resource);
-    const refreshToken = await signRefreshToken();
+    const principal = { sub: claims.sub, customers: claims.customers };
+    const { token, expiresIn } = await signAccessToken(principal, resource);
+    const refreshToken = await signRefreshToken(principal);
     return new Response(
       JSON.stringify({
         access_token: token,
@@ -69,12 +74,13 @@ export async function POST(request: Request): Promise<Response> {
   if (grantType === "refresh_token") {
     const refreshToken = String(form.get("refresh_token") ?? "");
     if (!refreshToken) return errorResponse("invalid_request", "Missing refresh_token");
+    let principal;
     try {
-      await verifyRefreshToken(refreshToken);
+      principal = await verifyRefreshToken(refreshToken);
     } catch {
       return errorResponse("invalid_grant", "Refresh token is invalid or expired");
     }
-    const { token, expiresIn } = await signAccessToken(resource);
+    const { token, expiresIn } = await signAccessToken(principal, resource);
     return new Response(JSON.stringify({ access_token: token, token_type: "Bearer", expires_in: expiresIn }), {
       status: 200,
       headers: { "content-type": "application/json", "cache-control": "no-store" },
