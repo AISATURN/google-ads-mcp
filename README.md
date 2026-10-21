@@ -127,6 +127,7 @@ In addition to the five `GOOGLE_ADS_*` variables above, set:
 | --- | --- | --- |
 | `MCP_OWNER_PASSWORD` | ✅ | **Your** password — unrestricted access to every account the credentials can reach. Long random string (not a memorized phrase) — e.g. `openssl rand -base64 24`. Gates the `/api/authorize` login page. |
 | `MCP_USERS` | — | Optional JSON array of extra users, each locked to specific ad accounts. See [Sharing access](#sharing-access-with-someone-else) below. |
+| `MCP_USER_<ID>` | — | One extra user per variable — `MCP_USER_GOOPLAST={"password":"...","customer_ids":["5660353352"]}`. Same effect as an entry in `MCP_USERS`, and the better way to add someone: see [Sharing access](#sharing-access-with-someone-else). |
 | `MCP_JWT_SECRET` | ✅ | Signs/verifies all OAuth tokens — e.g. `openssl rand -base64 32`. **Rotating this instantly revokes every outstanding token** (the incident-response path — there's no database to revoke individual tokens). |
 | `MCP_PUBLIC_URL` | ✅ | The deployment's base URL, no trailing slash (e.g. `https://your-project.vercel.app`). Used as the OAuth issuer/audience — must exactly match the real deployed domain. |
 
@@ -149,8 +150,22 @@ drive that connection while confined to the ad accounts you name:
 ]
 ```
 
-Set it as one line (`vercel env add MCP_USERS`), redeploy, and hand that person
-the deployment URL plus *their* password — nothing else. They add it in claude.ai
+Prefer declaring each person in their own variable instead — same fields, minus
+the `id` (which comes from the name) — because Vercel stores these values
+write-only:
+
+```bash
+vercel env add MCP_USER_GOOPLAST production
+# {"password":"<openssl rand -base64 18>","customer_ids":["5660353352"]}
+```
+
+With one variable per person you can add or revoke somebody without first
+reading back — and therefore rewriting — everyone else's password, which a
+shared `MCP_USERS` array forces you to do. Both forms are read and merged, so
+existing entries keep working.
+
+Redeploy, then hand that person the deployment URL plus *their* password —
+nothing else. They add it in claude.ai
 as a custom connector exactly like you do, and enter their password on the same
 `/api/authorize` page.
 
@@ -195,7 +210,7 @@ claude.ai then discovers `/.well-known/oauth-protected-resource` and `/.well-kno
 
 ### Revoking access
 
-- **One user:** remove their object from `MCP_USERS` and redeploy. Their password stops working immediately; any access token they still hold expires within 10 days (refresh tokens keep working until then only if you *also* rotate the secret below — so rotate it if the revocation is urgent).
+- **One user:** delete their `MCP_USER_<ID>` variable (or their object in `MCP_USERS`) and redeploy. Their password stops working immediately; any access token they still hold expires within 10 days (refresh tokens keep working until then only if you *also* rotate the secret below — so rotate it if the revocation is urgent).
 - **Everyone:** rotate `MCP_JWT_SECRET` in the Vercel project's env vars and redeploy. This immediately invalidates every issued access/refresh token and authorization code; you'll need to re-authorize the connector in claude.ai afterward.
 
 ---
